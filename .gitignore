@@ -1,0 +1,19 @@
+# Build artifacts
+bpe_trainer
+byte_bpe
+fairness
+edge_tokenizer
+
+# Output files (too large for GitHub)
+output/
+*.json
+*.txt
+
+# System
+.DS_Store
+*.o
+*.a
+*.so
+.vscode/
+.idea/
+*.swp
