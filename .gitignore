@@ -2,7 +2,10 @@
 bpe_trainer
 byte_bpe
 fairness
+codemixed
 edge_tokenizer
+explainable
+cuda/token_lookup_benchmark
 
 # Output files (too large for GitHub)
 output/
