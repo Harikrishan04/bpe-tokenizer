@@ -1,0 +1,27 @@
+name: CPU benchmark (ubuntu)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cpu-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build CPU benchmark
+        run: |
+          cd cuda
+          g++ -std=c++17 -O2 -o token_lookup_cpu token_lookup_cpu.cpp
+
+      - name: Run CPU benchmark
+        run: |
+          cd cuda
+          ./token_lookup_cpu 5000000 | tee cpu-benchmark.log
+
+      - name: Upload log
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-benchmark-log
+          path: cuda/cpu-benchmark.log
