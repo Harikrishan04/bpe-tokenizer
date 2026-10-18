@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -84,6 +85,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    cudaEvent_t h2d_start, h2d_stop, k_start, k_stop, d2h_start, d2h_stop;
+    cudaEventCreate(&h2d_start);
+    cudaEventCreate(&h2d_stop);
+    cudaEventCreate(&k_start);
+    cudaEventCreate(&k_stop);
+    cudaEventCreate(&d2h_start);
+    cudaEventCreate(&d2h_stop);
+
+    cudaEventRecord(h2d_start);
     err = cudaMemcpy(d_input, input.data(), n * sizeof(uint32_t), cudaMemcpyHostToDevice);
     if (err != cudaSuccess) {
         std::cerr << "cudaMemcpy input failed: " << cudaGetErrorString(err) << std::endl;
@@ -92,7 +102,6 @@ int main(int argc, char** argv) {
         cudaFree(d_input);
         return 1;
     }
-
     err = cudaMemcpy(d_lookup, lookup.data(), kTableSize * sizeof(uint32_t), cudaMemcpyHostToDevice);
     if (err != cudaSuccess) {
         std::cerr << "cudaMemcpy lookup failed: " << cudaGetErrorString(err) << std::endl;
@@ -101,21 +110,48 @@ int main(int argc, char** argv) {
         cudaFree(d_input);
         return 1;
     }
+    cudaEventRecord(h2d_stop);
+    cudaEventSynchronize(h2d_stop);
+    float h2d_ms = 0.0f;
+    cudaEventElapsedTime(&h2d_ms, h2d_start, h2d_stop);
 
     int threads = 256;
     int blocks = static_cast<int>((n + threads - 1) / threads);
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start);
     map_tokens_kernel<<<blocks, threads>>>(d_input, d_output, d_lookup, n);
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
+    cudaError_t kernErr = cudaGetLastError();
+    if (kernErr != cudaSuccess) {
+        std::cerr << "Kernel launch (warm-up) failed: " << cudaGetErrorString(kernErr) << std::endl;
+        cudaFree(d_lookup);
+        cudaFree(d_output);
+        cudaFree(d_input);
+        return 1;
+    }
+    cudaDeviceSynchronize();
 
-    float gpu_ms = 0.0f;
-    cudaEventElapsedTime(&gpu_ms, start, stop);
+    std::vector<float> kernel_times;
+    for (int i = 0; i < 5; ++i) {
+        cudaEventRecord(k_start);
+        map_tokens_kernel<<<blocks, threads>>>(d_input, d_output, d_lookup, n);
+        kernErr = cudaGetLastError();
+        if (kernErr != cudaSuccess) {
+            std::cerr << "Kernel launch failed: " << cudaGetErrorString(kernErr) << std::endl;
+            cudaFree(d_lookup);
+            cudaFree(d_output);
+            cudaFree(d_input);
+            return 1;
+        }
+        cudaEventRecord(k_stop);
+        cudaEventSynchronize(k_stop);
+        float k_ms = 0.0f;
+        cudaEventElapsedTime(&k_ms, k_start, k_stop);
+        kernel_times.push_back(k_ms);
+    }
 
+    std::sort(kernel_times.begin(), kernel_times.end());
+    float median_k_ms = kernel_times[kernel_times.size() / 2];
+
+    cudaEventRecord(d2h_start);
     err = cudaMemcpy(gpu_output.data(), d_output, n * sizeof(uint32_t), cudaMemcpyDeviceToHost);
     if (err != cudaSuccess) {
         std::cerr << "cudaMemcpy output failed: " << cudaGetErrorString(err) << std::endl;
@@ -124,6 +160,10 @@ int main(int argc, char** argv) {
         cudaFree(d_input);
         return 1;
     }
+    cudaEventRecord(d2h_stop);
+    cudaEventSynchronize(d2h_stop);
+    float d2h_ms = 0.0f;
+    cudaEventElapsedTime(&d2h_ms, d2h_start, d2h_stop);
 
     bool valid = true;
     for (size_t i = 0; i < n; ++i) {
@@ -138,17 +178,23 @@ int main(int argc, char** argv) {
     cudaFree(d_lookup);
     cudaFree(d_output);
     cudaFree(d_input);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    cudaEventDestroy(h2d_start);
+    cudaEventDestroy(h2d_stop);
+    cudaEventDestroy(k_start);
+    cudaEventDestroy(k_stop);
+    cudaEventDestroy(d2h_start);
+    cudaEventDestroy(d2h_stop);
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Input size: " << n << " elements\n";
     std::cout << "CPU time: " << cpu_ms << " ms\n";
-    std::cout << "GPU time: " << gpu_ms << " ms\n";
-
-    double speedup = cpu_ms / std::max(gpu_ms, 0.001f);
-    std::cout << "Speedup: " << speedup << "x\n";
+    std::cout << "GPU kernel (median of 5): " << median_k_ms << " ms\n";
+    std::cout << "H2D time: " << h2d_ms << " ms\n";
+    std::cout << "D2H time: " << d2h_ms << " ms\n";
+    float total_gpu_ms = h2d_ms + median_k_ms + d2h_ms;
+    std::cout << "GPU end-to-end (H2D+kernel+D2H): " << total_gpu_ms << " ms\n";
+    double speedup = cpu_ms / std::max(static_cast<double>(median_k_ms), 0.001);
+    std::cout << "Speedup (CPU / kernel-only): " << speedup << "x\n";
     std::cout << "Validation: " << (valid ? "PASS" : "FAIL") << "\n";
-
     return valid ? 0 : 1;
 }
